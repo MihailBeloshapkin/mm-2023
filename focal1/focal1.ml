@@ -21,10 +21,12 @@ type expr =
   | Set of ident * expr
   | Arythm of binop * expr * expr
   | Do of number
+  | Goto of number
   | Ident of ident
   | Return
   | Type of expr
   | If of expr * number * number * number
+  | For of ident * int * int * int * expr
   | Literal of value
 type line = number * expr
  
@@ -71,6 +73,8 @@ let number_parser =
   >>= fun snd_num -> return (int_of_string first_num, int_of_string snd_num)
 ;;
 
+let int_parser = space *> take_while1 is_digit
+
 let int_token =
   space *> take_while1 is_digit 
   >>= fun res -> return @@ Literal (Int (int_of_string res))
@@ -110,11 +114,22 @@ let type_d =
       (char ',' *> number_parser)
       (char ',' *> number_parser)
   in
+  let for_parser d =
+    fix 
+    @@ fun _ ->
+    lift3
+      (fun id (a, b, c) cmd -> For (id, a, b, c, cmd))
+      (token "FOR" *> space1 *> new_ident <* token "=")
+      (lift3 
+        (fun a b c -> int_of_string a, int_of_string b, int_of_string c) (int_parser <* char ',') (int_parser <* char ',') (int_parser))
+      (char ';' *> d.e d)
+  in
   let expression d =
     set_parser d
     <|> return_parser d
     <|> if_parser d
     <|> int_token
+    <|> for_parser d
   in
   { e = expression }
 ;;
@@ -150,26 +165,88 @@ let rec print_expr = function
     print_num n2;
     print_num n3;
     Caml.Format.print_string "]"
+  | Do num ->
+    print_string "DO ";
+    print_num num
   | Literal (Int x) ->
     Caml.Format.printf "(Int %i) " x
+  | For (id, i1, i2, i3, e) ->
+    Caml.Format.printf "For %s = (%i, %i, %i) [" id i1 i2 i3;
+    print_expr e;
+    print_string "]"
   | _ -> () 
 ;;
 
 let () =
   (*let r = parse_exp "SET x=10" in*)
-  let r = parse_exp "IF (0) 11.22,11.23,11.24" in
+  (*let r = parse_exp "IF (0) 11.22,11.23,11.24" in*)
+  
+  let r = parse_exp "FOR x=0,1,10; SET a=1" in
   match r with
   | Result.Ok e -> print_expr e;
   | _ -> Caml.Format.print_string "FAILED";
   ()
 ;;
 
+(* ----------------------------------------------------------------------- *)
+(* ----------------------------------------------------------------------- *)
+(* --------------------------------Execution------------------------------ *)
+(* ----------------------------------------------------------------------- *)
+(* ----------------------------------------------------------------------- *)
 
-(* ------------------------------- *)
-(* -------------Exec-------------- *)
-(* ------------------------------- *)
-let rec evaluator lines =  
-  0
+(** Lines -- list of commands; cp -- command pointer; ctx -- variables and its values *)
+
+let exec_op = function 
+  | Add, Int v1, Int v2 -> Int (v1 + v2)
+  | Sub, Int v1, Int v2 -> Int (v1 - v2)
+  | Mul, Int v1, Int v2 -> Int (v1 * v2)
+  | Div, Int v1, Int v2 -> Int (v1 / v2)
+  | Add, Float v1, Float v2 -> Float (v1 +. v2)
+  | Sub, Float v1, Float v2 -> Float (v1 -. v2)
+  | Mul, Float v1, Float v2 -> Float (v1 *. v2)
+  | Div, Float v1, Float v2 -> Float (v1 /. v2)
+  | _ -> failwith "Incorrect operation usage"  
+;;
+
+let rec exec_arythm ctx op = 
+  let open Base in
+  match op with
+  | Ident id -> List.find_exn ctx ~f:(fun (i, v) -> equal_string i id) |> snd
+  | Literal v -> v
+  | Arythm (op, e1, e2) ->
+    let v1 = exec_arythm ctx e1 in
+    let v2 = exec_arythm ctx e2 in
+    exec_op (op, v1, v2)
+  | _ -> failwith "Incorrect binary operation syntax"
+;;
+
+let rec evaluator lines cp ctx prev =  
+  let open Base in
+  let current_cmd = List.nth_exn lines cp in
+
+  let find_cmd_index (n1, n2) = 
+    List.findi_exn ~f:(fun _ ((n11, n22), _) -> n11 = n1 && n22 = n2) lines
+    |> fst 
+  in 
+  match current_cmd with
+  | (_, Set (id, Literal l)) -> 
+    evaluator lines (cp + 1) ((id, l) :: ctx) prev;
+  | (_, Do num) ->
+    let next = find_cmd_index num in
+    let new_ctx = evaluator lines next ctx cp in
+    evaluator lines (cp + 1) new_ctx prev
+  | (_, Return) -> ctx
+  | (_, If (e, n1, n2, n3)) ->
+    let v = exec_arythm ctx e in
+    let next_cmd = match v with
+      | Int i when i < 0 -> find_cmd_index n1
+      | Int i when i = 0 -> find_cmd_index n2
+      | Int i when i > 0 -> find_cmd_index n3
+      | _ -> failwith "Incorrect IF command syntax" 
+    in
+    evaluator lines next_cmd ctx prev
+  | _ -> []
+ 
 ;;  
 
 let run_program text =
