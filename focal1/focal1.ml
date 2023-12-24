@@ -196,6 +196,19 @@ let () =
 
 (** Lines -- list of commands; cp -- command pointer; ctx -- variables and its values *)
 
+module Data =
+  struct
+    type t = string
+    let compare = compare
+end
+
+module CtxData = Map.Make(Data)
+let m = CtxData.(empty |> add "a" (Int 10))
+let k = m |> CtxData.add "b" (Float 10.0)
+
+let add_to_ctx l new_el = 
+  if List.exists (fun )
+
 let exec_op = function 
   | Add, Int v1, Int v2 -> Int (v1 + v2)
   | Sub, Int v1, Int v2 -> Int (v1 - v2)
@@ -230,12 +243,21 @@ let rec evaluator lines cp ctx prev =
   in 
   match current_cmd with
   | (_, Set (id, Literal l)) -> 
-    evaluator lines (cp + 1) ((id, l) :: ctx) prev;
+    evaluator lines (cp + 1) (CtxData.add id l ctx) prev;
   | (_, Do num) ->
     let next = find_cmd_index num in
     let new_ctx = evaluator lines next ctx cp in
     evaluator lines (cp + 1) new_ctx prev
   | (_, Return) -> ctx
+  | (_, Goto num) -> 
+    let next = find_cmd_index num in
+    evaluator lines next ctx prev
+  | (_, For (id, i1, i2, i3, Do num)) ->
+    let rec exec_for current step endv =
+      0
+    in
+
+    () 
   | (_, If (e, n1, n2, n3)) ->
     let v = exec_arythm ctx e in
     let next_cmd = match v with
