@@ -141,12 +141,18 @@ let parse_exp text =
   result
 ;;
 
-
 let line_parser = 
   lift2 
     (fun num e -> (num, e))
     (number_parser <* space1)
-    e
+    e <* space
+;;
+
+let p text =
+  let result = Angstrom.parse_string line_parser ~consume:Angstrom.Consume.All text in
+  match result with
+  | Result.Ok r -> r
+  | _ -> failwith "failed to parse line"
 ;;
 
 let print_num (a, b) =
@@ -206,9 +212,6 @@ module CtxData = Map.Make(Data)
 let m = CtxData.(empty |> add "a" (Int 10))
 let k = m |> CtxData.add "b" (Float 10.0)
 
-let add_to_ctx l new_el = 
-  if List.exists (fun )
-
 let exec_op = function 
   | Add, Int v1, Int v2 -> Int (v1 + v2)
   | Sub, Int v1, Int v2 -> Int (v1 - v2)
@@ -224,7 +227,7 @@ let exec_op = function
 let rec exec_arythm ctx op = 
   let open Base in
   match op with
-  | Ident id -> List.find_exn ctx ~f:(fun (i, v) -> equal_string i id) |> snd
+  | Ident id -> (* List.find_exn ctx ~f:(fun (i, v) -> equal_string i id) |> snd *)
   | Literal v -> v
   | Arythm (op, e1, e2) ->
     let v1 = exec_arythm ctx e1 in
@@ -256,8 +259,7 @@ let rec evaluator lines cp ctx prev =
     let rec exec_for current step endv =
       0
     in
-
-    () 
+    CtxData.empty 
   | (_, If (e, n1, n2, n3)) ->
     let v = exec_arythm ctx e in
     let next_cmd = match v with
@@ -273,6 +275,6 @@ let rec evaluator lines cp ctx prev =
 
 let run_program text =
   let lines = Str.split (Str.regexp "[\n]+") text in
-  let parsed_lines = List.map (fun x -> 0) lines in
+  let parsed_lines = List.map (fun x -> line_parser x) lines in
   0
 ;;
