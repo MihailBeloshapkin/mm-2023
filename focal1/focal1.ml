@@ -88,6 +88,15 @@ let token_binop_parse =
       token "*";
       token "/"
     ]
+  >>= fun op ->
+  let res = match op with
+    | "+" -> Add
+    | "-" -> Sub
+    | "*" -> Mul
+    | _ -> Div
+  in
+  return res
+;;
 
 type dispatch = { e : dispatch -> expr t }
 
@@ -99,10 +108,14 @@ let type_d =
       (fun i e -> Set (i, e))
       (token "SET" *> space1 *> new_ident <* token "=")
       (d.e d)
+    <?> "set"
   in
   let return_parser _ =
     space *> token "RETURN"
     >>= fun _ -> return Return
+  in
+  let do_parser _ =
+    token "DO" *> number_parser >>= fun num -> return @@ Do num
   in
   let if_parser d =
     fix
@@ -116,16 +129,31 @@ let type_d =
   in
   let for_parser d =
     fix 
-    @@ fun _ ->
+    @@ fun _ -> 
     lift3
       (fun id (a, b, c) cmd -> For (id, a, b, c, cmd))
       (token "FOR" *> space1 *> new_ident <* token "=")
       (lift3 
         (fun a b c -> int_of_string a, int_of_string b, int_of_string c) (int_parser <* char ',') (int_parser <* char ',') (int_parser))
-      (char ';' *> d.e d)
+      (char ';' *> d.e d) <?> "For"
+  in
+  let binop_parser d =
+    fix
+    @@ fun _ ->
+    let par1 = choice [ char '('; char '['; char '<' ] in
+    let par2 = choice [ char ')'; char ']'; char '>' ] in
+    let c = choice [ par1 *> d.e d <* par2; (new_ident >>= fun x -> return @@ Ident x); int_token ] in
+    lift3
+      (fun e1 op e2 -> Arythm (op, e1, e2))
+      (space *> c <* space)
+       token_binop_parse
+      (space *> c <* space)
+    <?> "Binop"
   in
   let expression d =
     set_parser d
+    <|> do_parser d
+    <|> binop_parser d
     <|> return_parser d
     <|> if_parser d
     <|> int_token
@@ -148,13 +176,6 @@ let line_parser =
     e <* space
 ;;
 
-let p text =
-  let result = Angstrom.parse_string line_parser ~consume:Angstrom.Consume.All text in
-  match result with
-  | Result.Ok r -> r
-  | _ -> failwith "failed to parse line"
-;;
-
 let print_num (a, b) =
   printf "Num: (%i.%i)" a b
 ;;
@@ -164,6 +185,8 @@ let rec print_expr = function
     Caml.Format.printf "Set: %s ["id;
     print_expr e;
     Caml.Format.print_string "]"
+  | Return ->
+    printf "Return"
   | If (e, n1, n2, n3) ->
     Caml.Format.print_string "If [";
     print_expr e;
@@ -174,8 +197,14 @@ let rec print_expr = function
   | Do num ->
     print_string "DO ";
     print_num num
+  | Ident id -> printf "Ident: %s; " id;
   | Literal (Int x) ->
     Caml.Format.printf "(Int %i) " x
+  | Arythm (op, e1, e2) ->
+    printf "Binop [";
+    print_expr e1;
+    print_expr e2;
+    printf "]"
   | For (id, i1, i2, i3, e) ->
     Caml.Format.printf "For %s = (%i, %i, %i) [" id i1 i2 i3;
     print_expr e;
@@ -183,16 +212,17 @@ let rec print_expr = function
   | _ -> () 
 ;;
 
-let () =
-  (*let r = parse_exp "SET x=10" in*)
-  (*let r = parse_exp "IF (0) 11.22,11.23,11.24" in*)
-  
-  let r = parse_exp "FOR x=0,1,10; SET a=1" in
-  match r with
-  | Result.Ok e -> print_expr e;
-  | _ -> Caml.Format.print_string "FAILED";
-  ()
+
+let p text =
+  let result = Angstrom.parse_string line_parser ~consume:Angstrom.Consume.All text in
+  match result with
+  | Result.Ok r -> 
+    print_expr (snd r);
+    printf "\n";
+    r
+  | _ -> failwith "failed to parse line"
 ;;
+
 
 (* ----------------------------------------------------------------------- *)
 (* ----------------------------------------------------------------------- *)
@@ -227,7 +257,7 @@ let exec_op = function
 let rec exec_arythm ctx op = 
   let open Base in
   match op with
-  | Ident id -> (* List.find_exn ctx ~f:(fun (i, v) -> equal_string i id) |> snd *)
+  | Ident id -> CtxData.find id ctx (* List.find_exn ctx ~f:(fun (i, v) -> equal_string i id) |> snd *)
   | Literal v -> v
   | Arythm (op, e1, e2) ->
     let v1 = exec_arythm ctx e1 in
@@ -236,30 +266,51 @@ let rec exec_arythm ctx op =
   | _ -> failwith "Incorrect binary operation syntax"
 ;;
 
-let rec evaluator lines cp ctx prev =  
+let print_value = function
+  | Int i -> print_int i
+  | Float f -> print_float f
+  | String s -> print_string s
+;;
+
+let print_vars data =
+  CtxData.iter (fun id v -> printf "Var: %s Val: " id; print_value v; printf "\n") data
+;;
+
+let rec evaluator lines cp ctx =  
   let open Base in
   let current_cmd = List.nth_exn lines cp in
 
   let find_cmd_index (n1, n2) = 
     List.findi_exn ~f:(fun _ ((n11, n22), _) -> n11 = n1 && n22 = n2) lines
     |> fst 
-  in 
+  in
+  printf "DEBUG: ";
+  print_expr (snd current_cmd);
+  printf "\n";
+  print_vars ctx;
   match current_cmd with
-  | (_, Set (id, Literal l)) -> 
-    evaluator lines (cp + 1) (CtxData.add id l ctx) prev;
+  | (_, Set (id, e)) ->
+    let v = exec_arythm ctx e in
+    evaluator lines (cp + 1) (CtxData.add id v ctx);
   | (_, Do num) ->
     let next = find_cmd_index num in
-    let new_ctx = evaluator lines next ctx cp in
-    evaluator lines (cp + 1) new_ctx prev
+    let new_ctx = evaluator lines next ctx in
+    evaluator lines (cp + 1) new_ctx
   | (_, Return) -> ctx
   | (_, Goto num) -> 
     let next = find_cmd_index num in
-    evaluator lines next ctx prev
+    evaluator lines next ctx
   | (_, For (id, i1, i2, i3, Do num)) ->
-    let rec exec_for current step endv =
-      0
+    let next_cmd = find_cmd_index num in
+    let rec exec_for current step endv current_ctx =
+      if current < endv then
+        let new_ctx = evaluator lines next_cmd (CtxData.add id (Int current) current_ctx) in
+        exec_for (current + step) step endv new_ctx
+      else
+        current_ctx
     in
-    CtxData.empty 
+    let new_ctx = exec_for i1 i2 i3 ctx in
+    evaluator lines (cp + 1) new_ctx 
   | (_, If (e, n1, n2, n3)) ->
     let v = exec_arythm ctx e in
     let next_cmd = match v with
@@ -268,13 +319,41 @@ let rec evaluator lines cp ctx prev =
       | Int i when i > 0 -> find_cmd_index n3
       | _ -> failwith "Incorrect IF command syntax" 
     in
-    evaluator lines next_cmd ctx prev
-  | _ -> []
- 
+    evaluator lines next_cmd ctx
+  | _ -> CtxData.empty
 ;;  
 
 let run_program text =
-  let lines = Str.split (Str.regexp "[\n]+") text in
-  let parsed_lines = List.map (fun x -> line_parser x) lines in
-  0
+  let lines = 
+    Str.split (Str.regexp "[\n]+") text
+    (*|> List.filter (fun x -> not @@ is_whitespace x)*)
+  in
+  List.iter (fun x -> printf "Line: "; print_string x; printf "\n") lines;
+  let parsed_lines = List.map p lines in
+  (*List.iter (fun (_, x) -> printf "Ast: "; print_expr x; printf "\n") parsed_lines;*)
+
+  let result = evaluator parsed_lines 0 CtxData.empty in
+  printf "RESULT: \n";
+  print_vars result
+;;
+
+let text =
+  {|10.00 SET x=1+1
+    10.01 SET y=1+10
+    10.02 SET z=1
+    10.03 FOR i=1,1,10; DO 11.01
+    10.04 RETURN
+    11.01 SET z=z*i
+    11.02 RETURN|}
+
+let () =
+  (*let r = parse_exp "SET x=10" in*)
+  (*let r = parse_exp "IF (0) 11.22,11.23,11.24" in*)
+  (*
+  let r = parse_exp "FOR x=0,1,10; SET a=1" in
+  match r with
+  | Result.Ok e -> print_expr e;
+  | _ -> Caml.Format.print_string "FAILED";
+  ()*)
+  run_program text
 ;;
