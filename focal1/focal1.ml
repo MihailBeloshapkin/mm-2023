@@ -26,7 +26,7 @@ type expr =
   | Return
   | Type of expr
   | If of expr * number * number * number
-  | For of ident * int * int * int * expr
+  | For of ident * expr * expr * expr * expr
   | Literal of value
 type line = number * expr
  
@@ -98,6 +98,8 @@ let token_binop_parse =
   return res
 ;;
 
+let ident_parser = new_ident >>= fun x -> return @@ Ident x
+
 type dispatch = { e : dispatch -> expr t }
 
 let type_d =  
@@ -117,6 +119,9 @@ let type_d =
   let do_parser _ =
     token "DO" *> number_parser >>= fun num -> return @@ Do num
   in
+  let goto_parser _ =
+    token "GOTO" *> number_parser >>= fun num -> return @@ Goto num
+  in
   let if_parser d =
     fix
     @@ fun _ ->
@@ -134,7 +139,7 @@ let type_d =
       (fun id (a, b, c) cmd -> For (id, a, b, c, cmd))
       (token "FOR" *> space1 *> new_ident <* token "=")
       (lift3 
-        (fun a b c -> int_of_string a, int_of_string b, int_of_string c) (int_parser <* char ',') (int_parser <* char ',') (int_parser))
+        (fun a b c -> a, b, c) (d.e d <* char ',') (d.e d <* char ',') (d.e d))
       (char ';' *> d.e d) <?> "For"
   in
   let binop_parser d =
@@ -142,18 +147,20 @@ let type_d =
     @@ fun _ ->
     let par1 = choice [ char '('; char '['; char '<' ] in
     let par2 = choice [ char ')'; char ']'; char '>' ] in
-    let c = choice [ par1 *> d.e d <* par2; (new_ident >>= fun x -> return @@ Ident x); int_token ] in
+    let c = choice [ char '(' *> d.e d <* char ')'; ident_parser; int_token ] in
     lift3
       (fun e1 op e2 -> Arythm (op, e1, e2))
       (space *> c <* space)
-       token_binop_parse
+      token_binop_parse
       (space *> c <* space)
     <?> "Binop"
   in
   let expression d =
     set_parser d
     <|> do_parser d
+    <|> goto_parser d
     <|> binop_parser d
+    <|> ident_parser
     <|> return_parser d
     <|> if_parser d
     <|> int_token
@@ -197,6 +204,9 @@ let rec print_expr = function
   | Do num ->
     print_string "DO ";
     print_num num
+  | Goto num ->
+    print_string "GOTO ";
+    print_num num
   | Ident id -> printf "Ident: %s; " id;
   | Literal (Int x) ->
     Caml.Format.printf "(Int %i) " x
@@ -206,7 +216,10 @@ let rec print_expr = function
     print_expr e2;
     printf "]"
   | For (id, i1, i2, i3, e) ->
-    Caml.Format.printf "For %s = (%i, %i, %i) [" id i1 i2 i3;
+    Caml.Format.printf "For %s: [" id;
+    print_expr i1;
+    print_expr i2;
+    print_expr i3;
     print_expr e;
     print_string "]"
   | _ -> () 
@@ -288,6 +301,7 @@ let rec evaluator lines cp ctx =
   print_expr (snd current_cmd);
   printf "\n";
   print_vars ctx;
+    
   match current_cmd with
   | (_, Set (id, e)) ->
     let v = exec_arythm ctx e in
@@ -309,8 +323,14 @@ let rec evaluator lines cp ctx =
       else
         current_ctx
     in
-    let new_ctx = exec_for i1 i2 i3 ctx in
-    evaluator lines (cp + 1) new_ctx 
+    let v1 = exec_arythm ctx i1 in
+    let v2 = exec_arythm ctx i2 in
+    let v3 = exec_arythm ctx i3 in
+    (match v1, v2, v3 with
+    | Int a, Int b, Int c ->
+      let new_ctx = exec_for a b c ctx in
+      evaluator lines (cp + 1) new_ctx
+    | _ -> failwith "Failed to exec FOR") 
   | (_, If (e, n1, n2, n3)) ->
     let v = exec_arythm ctx e in
     let next_cmd = match v with
@@ -330,30 +350,39 @@ let run_program text =
   in
   List.iter (fun x -> printf "Line: "; print_string x; printf "\n") lines;
   let parsed_lines = List.map p lines in
-  (*List.iter (fun (_, x) -> printf "Ast: "; print_expr x; printf "\n") parsed_lines;*)
-
   let result = evaluator parsed_lines 0 CtxData.empty in
-  printf "RESULT: \n";
+  printf "======================================\nRESULT: \n";
   print_vars result
 ;;
 
-let text =
-  {|10.00 SET x=1+1
-    10.01 SET y=1+10
-    10.02 SET z=1
-    10.03 FOR i=1,1,10; DO 11.01
-    10.04 RETURN
-    11.01 SET z=z*i
+let text0 =
+  {|10.00 SET fact=10
+    10.05 SET result=1
+    10.07 FOR i=1,1,fact; DO 11.01
+    10.09 RETURN
+    11.01 SET result=i*result
     11.02 RETURN|}
 
+let text1 =
+  {|10.00 IF (1) 11.00,12.00,13.00
+    11.00 SET x=10
+    11.01 GOTO 14.00
+    12.00 SET x=20
+    12.01 GOTO 14.00
+    13.00 SET x=30
+    13.01 GOTO 14.00
+    14.00 RETURN|}
+
+    
+let get_file filename =
+  let current_channel = open_in filename in
+  let data = really_input_string current_channel (in_channel_length current_channel) in
+  close_in current_channel;
+  data
+;;
+
 let () =
-  (*let r = parse_exp "SET x=10" in*)
-  (*let r = parse_exp "IF (0) 11.22,11.23,11.24" in*)
-  (*
-  let r = parse_exp "FOR x=0,1,10; SET a=1" in
-  match r with
-  | Result.Ok e -> print_expr e;
-  | _ -> Caml.Format.print_string "FAILED";
-  ()*)
+  let file = Sys.argv.(1) in
+  let text = get_file file in
   run_program text
 ;;
