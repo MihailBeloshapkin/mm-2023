@@ -1,0 +1,8 @@
+10.01 SET x=7   
+10.02 SET result=1   
+10.03 FOR i=1,1,x; DO 11.01   
+10.04 GOTO 12.01   
+11.01 SET result=i*result  
+11.02 RETURN   
+12.01 SET result=result*10
+12.02 RETURN    
